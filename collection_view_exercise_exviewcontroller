@@ -1,0 +1,421 @@
+//
+//  ExViewController.swift
+//  collection_view
+//
+//  Created by Mobicip on 28/04/26.
+//
+
+import UIKit
+
+nonisolated enum Section: CaseIterable {
+    case days
+    case stats
+    case exercises
+}
+
+nonisolated enum Item: Hashable {
+    case day(day: String, date: String)
+    case stat(value: String, title: String)
+    case exercise(title: String, subtitle: String, imageURL: URL)
+}
+
+class ExViewController: UIViewController {
+    
+    private var collectionView: UICollectionView!
+    private var dataSource: UICollectionViewDiffableDataSource<Section, Item>!
+    
+    private var daysData: [(day: String, date: String)] = []
+    private var selectedDay: Item?
+    private var imageCache: [URL: UIImage] = [:]
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        view.backgroundColor = .white
+        title = "Exercise Plan"
+        
+        daysData = generateDays(count: 30)
+        
+        setupCollectionView()
+        configureDataSource()
+        applySnapshot()
+    }
+}
+
+extension ExViewController {
+    
+    private func setupCollectionView() {
+        collectionView = UICollectionView(
+            frame: .zero,
+            collectionViewLayout: createLayout()
+        )
+        
+        collectionView.delegate = self
+        collectionView.prefetchDataSource = self
+        collectionView.backgroundColor = .white
+        
+        collectionView.register(DayCell.self, forCellWithReuseIdentifier: DayCell.identifier)
+        collectionView.register(StatCell.self, forCellWithReuseIdentifier: StatCell.identifier)
+        collectionView.register(ExerciseCell.self, forCellWithReuseIdentifier: ExerciseCell.identifier)
+        collectionView.register(Header.self, forSupplementaryViewOfKind:UICollectionView.elementKindSectionHeader, withReuseIdentifier: Header.identifier)
+        collectionView.register(BadgeSupplementaryView.self, forSupplementaryViewOfKind: "badge-element-kind", withReuseIdentifier: "Badge")
+        
+        view.addSubview(collectionView)
+        
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            collectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+        
+        let startButton = UIButton(type: .system)
+        startButton.setTitle("Start Now", for: .normal)
+        startButton.backgroundColor = .systemRed
+        startButton.setTitleColor(.white, for: .normal)
+        startButton.layer.cornerRadius = 12
+
+        //startButton.addTarget(self, action: #selector(startWorkout), for: .touchUpInside)
+
+        view.addSubview(startButton)
+
+        startButton.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            startButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            startButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            startButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor ),
+            startButton.heightAnchor.constraint(equalToConstant: 50)
+        ])
+    }
+}
+
+// Diffable DataSource
+
+extension ExViewController {
+    
+    private func configureDataSource() {
+        
+        dataSource = UICollectionViewDiffableDataSource<Section, Item>(
+            collectionView: collectionView
+        ) { [weak self] collectionView, indexPath, item in
+            
+            guard let self = self else { return nil }
+            
+            switch item {
+                
+            case .day(let day, let date):
+                let cell = collectionView.dequeueReusableCell(withReuseIdentifier: DayCell.identifier,for: indexPath) as! DayCell
+                
+                let isSelected = (item == self.selectedDay)
+                cell.configure(day: day, date: date, isSelected: isSelected)
+                return cell
+                
+            case .stat(let value, let title):
+                let cell = collectionView.dequeueReusableCell(withReuseIdentifier: StatCell.identifier,for: indexPath) as! StatCell
+                
+                cell.configure(value: value, title: title)
+                return cell
+                
+            case .exercise(let title, let subtitle, let url):
+
+            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: ExerciseCell.identifier,for: indexPath) as! ExerciseCell
+
+                cell.configure(title: title, subtitle: subtitle, image: nil)
+
+                if let image = self.imageCache[url] {
+                    cell.configure(title: title, subtitle: subtitle, image: image)
+                } else {
+                    Task { [weak self] in
+                        await self?.fetchImage(from: url)
+
+                        DispatchQueue.main.async {
+                            if let updatedCell = collectionView.cellForItem(at: indexPath) as? ExerciseCell {
+                                updatedCell.configure(title: title,subtitle: subtitle,image: self?.imageCache[url])
+                            }
+                        }
+                    }
+                }
+
+                return cell
+            }
+        }
+        
+        dataSource.supplementaryViewProvider = { collectionView, kind, indexPath in
+            
+            if kind == UICollectionView.elementKindSectionHeader {
+                
+                let header = collectionView.dequeueReusableSupplementaryView(ofKind: kind,withReuseIdentifier: Header.identifier,for: indexPath) as! Header
+                
+                let section = Section.allCases[indexPath.section]
+                
+                switch section {
+                case .days:
+                    header.label.text = "Select Day"
+                case .stats:
+                    header.label.text = "Stats"
+                case .exercises:
+                    header.label.text = "Exercises"
+                }
+                
+                return header
+            }
+            else if kind == "badge-element-kind"{
+                let badge = collectionView.dequeueReusableSupplementaryView(ofKind: "badge-element-kind", withReuseIdentifier: "Badge", for: indexPath) as! BadgeSupplementaryView
+                let item = self.dataSource.itemIdentifier(for: indexPath)
+                badge.isHidden = (item != self.selectedDay)
+                return badge
+            }
+            return nil
+        }
+        
+    }
+    
+    
+    private func applySnapshot() {
+        
+        var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
+        
+        snapshot.appendSections(Section.allCases)
+        
+        let days = daysData.map { Item.day(day: $0.day, date: $0.date) }
+        snapshot.appendItems(days, toSection: .days)
+        
+        let stats = [
+            ("30", "Minutes"),
+            ("3", "Set"),
+            ("4", "Exercises"),
+            ("3", "Level")
+        ].map { Item.stat(value: $0.0, title: $0.1) }
+        
+        snapshot.appendItems(stats, toSection: .stats)
+        
+        let exercises = [
+            ("Push Ups", "10 reps",
+             URL(string: "https://www.muscletech.in/wp-content/uploads/2025/01/push-up-exercises.webp")!),
+            
+            ("Squats", "12 reps",
+             URL(string: "https://row.gymshark.com/_next/image?url=https%3A%2F%2Fimages.ctfassets.net%2F8urtyqugdt2l%2F56AQL6OUTCfTjfSzcmkl3r%2Fe86840c8ea82de5a79f0439fd15cff7c%2Fgoblet-squat.jpg&w=3840&q=85")!),
+            
+            ("Lunges", "10 reps each leg",
+             URL(string: "https://www.prowolf.in/cdn/shop/articles/master-the-lunge-exercise-a-step-by-step-guide-to-boost-your-lower-body-strength-452309_f2b6aed5-a79c-436f-979b-67713f765f2d.jpg?v=1764244973")!),
+            
+            ("Plank", "30 sec",
+             URL(string: "https://www.lghealthblog.com/wp-content/uploads/2023/09/plank-for-the-body.png")!),
+            
+            ("Crunches", "12 reps",
+             URL(string: "https://i0.wp.com/www.muscleandfitness.com/wp-content/uploads/2020/04/Man-Doing-Crunches-At-Home.jpg?quality=86&strip=all")!),
+            
+            ("Leg Raises", "10 reps",
+             URL(string: "https://img.freepik.com/free-photo/fitness-man_23-2148138026.jpg?semt=ais_hybrid&w=740&q=80")!),
+            
+            ("Burpees", "8 reps",
+             URL(string: "https://img.freepik.com/premium-vector/flat-vector-man-playing-badminton-action-pose-hitting-shuttlecock-clean-lines-modern-flat-design_469760-47959.jpg?semt=ais_hybrid&w=740&q=80")!),
+            
+            ("Jumping Jacks", "30 sec",
+             URL(string: "https://img.freepik.com/premium-vector/jumping-jacks-exercise-woman-workout-fitness-aerobic-exercises_476141-1514.jpg?semt=ais_hybrid&w=740&q=80")!),
+            
+            ("Mountain Climbers", "20 reps",
+             URL(string: "https://img.freepik.com/premium-vector/mountain-climbers-exercise-woman-workout-fitness-aerobic-exercises_476141-2535.jpg?semt=ais_hybrid&w=740&q=80")!),
+            
+            ("Glute Bridge", "12 reps",
+             URL(string: "https://img.freepik.com/premium-vector/glute-bridge-exercise-woman-workout-fitness-aerobic-exercises_476141-1126.jpg?semt=ais_hybrid&w=740&q=80")!)
+        ].map { Item.exercise(title: $0.0, subtitle: $0.1, imageURL: $0.2 )}
+        
+        snapshot.appendItems(exercises, toSection: .exercises)
+        
+        dataSource.apply(snapshot, animatingDifferences: true)
+    }
+}
+
+// Layout
+
+extension ExViewController {
+    
+    private func createLayout() -> UICollectionViewLayout {
+        
+       let layout = UICollectionViewCompositionalLayout { sectionIndex, _ in
+            
+            let section = Section.allCases[sectionIndex]
+            
+            switch section {
+                
+            case .days:
+                let badgeAnchor = NSCollectionLayoutAnchor(edges: [.top, .trailing], fractionalOffset: CGPoint(x: 0.3, y: -0.3))
+                let badgeSize = NSCollectionLayoutSize(widthDimension: .absolute(10), heightDimension: .absolute(10))
+                let badge = NSCollectionLayoutSupplementaryItem(layoutSize: badgeSize, elementKind: "badge-element-kind", containerAnchor: badgeAnchor)
+                let item = NSCollectionLayoutItem(
+                    layoutSize: .init(
+                        widthDimension: .absolute(95),
+                        heightDimension: .absolute(120)
+                    ),
+                    supplementaryItems: [badge]
+                )
+                item.contentInsets = .init(top: 0, leading: 10, bottom: 0, trailing: 10)
+            
+                let group = NSCollectionLayoutGroup.horizontal(
+                    layoutSize: .init(
+                        widthDimension: .fractionalWidth(1),
+                        heightDimension: .absolute(120)
+                    ),
+                    subitems: [item]
+                )
+                
+                let sectionLayout = NSCollectionLayoutSection(group: group)
+                sectionLayout.orthogonalScrollingBehavior = .continuous
+                sectionLayout.contentInsets = .init(top: 10, leading: 20, bottom: 10, trailing: 20)
+                
+                let headerSize = NSCollectionLayoutSize(
+                    widthDimension: .fractionalWidth(1),
+                    heightDimension: .estimated(40)
+                )
+
+                let header = NSCollectionLayoutBoundarySupplementaryItem(layoutSize:headerSize,elementKind: UICollectionView.elementKindSectionHeader,alignment: .top)
+                header.pinToVisibleBounds = true
+            
+                sectionLayout.boundarySupplementaryItems = [header]
+                return sectionLayout
+                
+            case .stats:
+                
+
+                let item = NSCollectionLayoutItem(
+                    layoutSize: .init(
+                        widthDimension: .fractionalWidth(1.0 / 4.0),
+                        heightDimension: .fractionalHeight(1)
+                    )
+                )
+                item.contentInsets = .init(top: 0, leading: 10, bottom: 0, trailing: 10)
+                let group = NSCollectionLayoutGroup.horizontal(
+                    layoutSize: .init(
+                        widthDimension: .fractionalWidth(1),
+                        heightDimension: .absolute(85)
+                    ),
+                    subitems: [item]
+                )
+                
+                let sectionLayout = NSCollectionLayoutSection(group: group)
+                sectionLayout.contentInsets = .init(top: 0, leading: 20, bottom: 10, trailing: 20)
+                
+                let headerSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1),heightDimension: .estimated(30))
+
+                let header = NSCollectionLayoutBoundarySupplementaryItem(layoutSize:headerSize,elementKind: UICollectionView.elementKindSectionHeader,alignment: .top)
+                
+                sectionLayout.boundarySupplementaryItems = [header]
+                
+                let background = NSCollectionLayoutDecorationItem.background(elementKind: BackgroundDecorationView.elementKind)
+                background.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 20, bottom: 10, trailing: 20)
+                sectionLayout.decorationItems = [background]
+                
+                return sectionLayout
+                
+            case .exercises:
+                let item = NSCollectionLayoutItem(
+                    layoutSize: .init(
+                        widthDimension: .fractionalWidth(1),
+                        heightDimension: .estimated(120) // self-sizing
+                    )
+                )
+                
+                let group = NSCollectionLayoutGroup.vertical(
+                    layoutSize: .init(
+                        widthDimension: .fractionalWidth(1),
+                        heightDimension: .estimated(120)
+                    ),
+                    subitems: [item]
+                )
+                
+                let sectionLayout = NSCollectionLayoutSection(group: group)
+                sectionLayout.interGroupSpacing = 15
+                sectionLayout.contentInsets = .init(top: 10, leading: 20, bottom: 20, trailing: 20)
+                
+                let headerSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1),heightDimension: .estimated(40))
+
+                let header = NSCollectionLayoutBoundarySupplementaryItem(layoutSize:headerSize,elementKind: UICollectionView.elementKindSectionHeader,alignment: .top)
+
+                sectionLayout.boundarySupplementaryItems = [header]
+                return sectionLayout
+            }
+        }
+        layout.register(BackgroundDecorationView.self, forDecorationViewOfKind: BackgroundDecorationView.elementKind)
+        return layout
+    }
+
+}
+
+//Delegate
+
+extension ExViewController: UICollectionViewDelegate {
+    
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        
+        guard let newItem = dataSource.itemIdentifier(for: indexPath) else { return }
+        
+        guard case .day = newItem else { return }
+        var snapshot = dataSource.snapshot()
+        
+        if let previous = selectedDay{
+            snapshot.reloadItems([previous])
+        }
+        
+        selectedDay = newItem
+        snapshot.reloadItems([newItem])
+        dataSource.apply(snapshot, animatingDifferences: true)
+    }
+}
+
+// prefetch
+
+extension ExViewController: UICollectionViewDataSourcePrefetching {
+
+    func collectionView(_ collectionView: UICollectionView,
+                        prefetchItemsAt indexPaths: [IndexPath]) {
+
+        for indexPath in indexPaths {
+
+            guard let item = dataSource.itemIdentifier(for: indexPath),
+                  case .exercise(_, _, let url) = item else { continue }
+
+            Task {
+                await fetchImage(from: url)
+            }
+        }
+    }
+}
+
+// Helpers
+
+extension ExViewController {
+    
+    func generateDays(count: Int) -> [(day: String, date: String)] {
+        
+        var result: [(String, String)] = []
+        
+        let calendar = Calendar.current
+        let today = Date()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "E d MMM"
+        
+        for i in 0..<count {
+            if let nextDate = calendar.date(byAdding: .day, value: i, to: today) {
+                let formattedDate = formatter.string(from: nextDate)
+                result.append(("\(i + 1)", formattedDate))
+            }
+        }
+        return result
+    }
+    
+    func fetchImage(from url: URL) async {
+
+        if imageCache[url] != nil { return }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            imageCache[url] = UIImage(data: data)
+        } catch {
+            print(error)
+        }
+    }
+}
+
